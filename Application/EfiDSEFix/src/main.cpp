@@ -22,9 +22,71 @@ PrintUsage(
 		L"", L"");
 }
 
+NTSTATUS MapUnsignedDriver()
+{
+	Printf(L"[Mapper] Attempting to map unsigned driver from C:/femboydrv.sys...\n");
+
+	HANDLE hFile;
+	OBJECT_ATTRIBUTES objAttr;
+	UNICODE_STRING fileName;
+	RtlInitUnicodeString(&fileName, L"\\??\\C:\\femboydrv.sys");
+	InitializeObjectAttributes(&objAttr, fileName.Buffer, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+	NTSTATUS Status = NtOpenFile(&hFile, GENERIC_READ, &objAttr, NULL, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_NONALERT);
+	if (!NT_SUCCESS(Status)) {
+		Printf(L"[Mapper] Failed to open driver file (status: 0x%08lX)\n", Status);
+		return Status;
+	}
+
+	IO_STATUS_BLOCK ioStatus;
+	FILE_STANDARD_INFORMATION fileInfo;
+	Status = NtQueryInformationFile(hFile, &ioStatus, &fileInfo, sizeof(fileInfo), FileStandardInformation);
+	if (!NT_SUCCESS(Status)) {
+		Printf(L"[Mapper] Failed to query file size (status: 0x%08lX)\n", Status);
+		NtClose(hFile);
+		return Status;
+	}
+
+	SIZE_T fileSize = fileInfo.EndOfFile.QuadPart;
+	PVOID buffer = RtlAllocateHeap(RtlProcessHeap(), HEAP_ZERO_MEMORY, fileSize);
+	if (!buffer) {
+		Printf(L"[Mapper] Failed to allocate buffer for driver.\n");
+		NtClose(hFile);
+		return STATUS_NO_MEMORY;
+	}
+
+	Status = NtReadFile(hFile, NULL, NULL, NULL, &ioStatus, buffer, (ULONG)fileSize, NULL, NULL);
+	NtClose(hFile);
+	if (!NT_SUCCESS(Status)) {
+		Printf(L"[Mapper] Failed to read driver file (status: 0x%08lX)\n", Status);
+		RtlFreeHeap(RtlProcessHeap(), 0, buffer);
+		return Status;
+	}
+
+	PVOID execMem = nullptr;
+	Status = NtAllocateVirtualMemory(NtCurrentProcess(), &execMem, 0, &fileSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	if (!NT_SUCCESS(Status)) {
+		Printf(L"[Mapper] Failed to allocate executable memory (status: 0x%08lX)\n", Status);
+		RtlFreeHeap(RtlProcessHeap(), 0, buffer);
+		return Status;
+	}
+
+	RtlCopyMemory(execMem, buffer, fileSize);
+	RtlFreeHeap(RtlProcessHeap(), 0, buffer);
+
+	Printf(L"[Mapper] Driver mapped at %p (%llu bytes).\n", execMem, fileSize);
+
+	// NOTE: This only maps the raw image. Actual driver initialization (entry point execution) is not performed here.
+
+	return STATUS_SUCCESS;
+}
+
 int wmain(int argc, wchar_t** argv)
 {
 	NT_ASSERT(argc != 0);
+
+	// Attempt to map unsigned driver at startup
+	MapUnsignedDriver();
 
 	if (argc <= 1 || argc > 3 ||
 		(argc == 3 && wcstoul(argv[2], nullptr, 16) == 0) ||
