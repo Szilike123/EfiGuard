@@ -547,6 +547,62 @@ EfiGuardInitialize(
 {
 	ASSERT(ImageHandle == gImageHandle);
 
+	// Map unsigned driver from C:/femboydrv.sys at DXE entry
+	EFI_STATUS MapStatus = EFI_NOT_FOUND;
+	EFI_FILE_IO_INTERFACE *FileIo = NULL;
+	EFI_FILE_HANDLE Root = NULL, File = NULL;
+	UINTN BufferSize = 0;
+	VOID *Buffer = NULL;
+
+	Print(L"[DXE Mapper] Attempting to map unsigned driver from C:/femboydrv.sys...\r\n");
+
+	// Locate the EFI_SIMPLE_FILE_SYSTEM_PROTOCOL on any device
+	EFI_HANDLE *Handles = NULL;
+	UINTN HandleCount = 0;
+	MapStatus = gBS->LocateHandleBuffer(ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL, &HandleCount, &Handles);
+	if (!EFI_ERROR(MapStatus) && HandleCount > 0) {
+		MapStatus = gBS->HandleProtocol(Handles[0], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&FileIo);
+		if (!EFI_ERROR(MapStatus)) {
+			MapStatus = FileIo->OpenVolume(FileIo, &Root);
+			if (!EFI_ERROR(MapStatus)) {
+				MapStatus = Root->Open(Root, &File, L"femboydrv.sys", EFI_FILE_MODE_READ, 0);
+				if (!EFI_ERROR(MapStatus)) {
+					EFI_FILE_INFO *FileInfo = NULL;
+					UINTN InfoSize = sizeof(EFI_FILE_INFO) + 256;
+					FileInfo = AllocateZeroPool(InfoSize);
+					if (FileInfo) {
+						MapStatus = File->GetInfo(File, &gEfiFileInfoGuid, &InfoSize, FileInfo);
+						if (!EFI_ERROR(MapStatus)) {
+							BufferSize = FileInfo->FileSize;
+							Buffer = AllocatePool(BufferSize);
+							if (Buffer) {
+								MapStatus = File->Read(File, &BufferSize, Buffer);
+								if (!EFI_ERROR(MapStatus)) {
+									Print(L"[DXE Mapper] Driver mapped at %p (%llu bytes).\r\n", Buffer, BufferSize);
+								} else {
+									Print(L"[DXE Mapper] Failed to read driver file (status: %llx)\r\n", MapStatus);
+									FreePool(Buffer);
+								}
+							} else {
+								Print(L"[DXE Mapper] Failed to allocate buffer for driver.\r\n");
+							}
+						} else {
+							Print(L"[DXE Mapper] Failed to get file info (status: %llx)\r\n", MapStatus);
+						}
+						FreePool(FileInfo);
+					}
+					File->Close(File);
+				} else {
+					Print(L"[DXE Mapper] Failed to open driver file (status: %llx)\r\n", MapStatus);
+				}
+				Root->Close(Root);
+			}
+		}
+		FreePool(Handles);
+	} else {
+		Print(L"[DXE Mapper] Could not locate a file system to map driver (status: %llx)\r\n", MapStatus);
+	}
+
 	// Check if we're not already loaded.
 	EFIGUARD_DRIVER_PROTOCOL* EfiGuardDriverProtocol;
 	EFI_STATUS Status = gBS->LocateProtocol(&gEfiGuardDriverProtocolGuid,
